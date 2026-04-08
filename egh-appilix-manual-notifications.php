@@ -281,6 +281,109 @@ function egh_amn_is_broadcast_request( $device_target, $level_target, $cefr_targ
     return 'all' === $device_target && 'all' === $level_target && 'all' === $cefr_target;
 }
 
+/**
+ * Global helper for sending Appilix notifications to a filtered audience.
+ *
+ * Supported args:
+ * - notification_title|string|required
+ * - notification_body|string|required
+ * - open_link_url|string|optional
+ * - notification_image|string|optional
+ * - device_target|string|optional all|android|iphone
+ * - language_target|string|optional ISO studied language code or all
+ * - level_target|string|optional alias of language_target for backward compatibility
+ * - cefr_target|string|optional A1/A2/B1/B2/C1/C2 or all
+ *
+ * @param array $args Notification and audience arguments.
+ * @return array|WP_Error Summary array on success, or WP_Error on failure.
+ */
+function egh_send_appilix_notification_to_audience( $args ) {
+    $args = wp_parse_args(
+        $args,
+        array(
+            'notification_title' => '',
+            'notification_body'  => '',
+            'open_link_url'      => '',
+            'notification_image' => '',
+            'device_target'      => 'all',
+            'language_target'    => 'all',
+            'level_target'       => null,
+            'cefr_target'        => 'all',
+        )
+    );
+
+    $title         = sanitize_text_field( $args['notification_title'] );
+    $body          = sanitize_textarea_field( $args['notification_body'] );
+    $open_link_url = esc_url_raw( $args['open_link_url'] );
+    $image_url     = esc_url_raw( $args['notification_image'] );
+    $device_target = sanitize_key( $args['device_target'] );
+    $cefr_target   = sanitize_text_field( $args['cefr_target'] );
+    $level_target  = null !== $args['level_target'] ? sanitize_text_field( $args['level_target'] ) : sanitize_text_field( $args['language_target'] );
+
+    if ( '' === $title || '' === $body ) {
+        return new WP_Error( 'egh_amn_missing_message', 'Notification title and body are required.' );
+    }
+
+    if ( ! in_array( $device_target, array( 'all', 'android', 'iphone' ), true ) ) {
+        $device_target = 'all';
+    }
+
+    if ( '' === $level_target ) {
+        $level_target = 'all';
+    }
+
+    if ( '' === $cefr_target ) {
+        $cefr_target = 'all';
+    }
+
+    $settings     = egh_amn_get_settings();
+    $is_broadcast = egh_amn_is_broadcast_request( $device_target, $level_target, $cefr_target );
+    $users        = $is_broadcast ? array() : egh_amn_get_matching_users( $device_target, $level_target, $cefr_target, $settings );
+    $sent_count   = 0;
+    $failed_count = 0;
+
+    if ( $is_broadcast ) {
+        $result = egh_amn_send_appilix_notification( '', $title, $body, $open_link_url, '' );
+        egh_amn_log_send_result( 'BROADCAST', $title, $body, $result );
+
+        if ( is_wp_error( $result ) ) {
+            return $result;
+        }
+
+        return array(
+            'mode'         => 'broadcast',
+            'sent_count'   => 1,
+            'failed_count' => 0,
+            'matched_users'=> 0,
+        );
+    }
+
+    foreach ( $users as $user ) {
+        $user_image = '';
+
+        if ( ! empty( $image_url ) && 'android' === $user['device'] ) {
+            $user_image = $image_url;
+        }
+
+        $result = egh_amn_send_appilix_notification( $user['email'], $title, $body, $open_link_url, $user_image );
+        egh_amn_log_send_result( $user['email'], $title, $body, $result );
+
+        if ( is_wp_error( $result ) ) {
+            $failed_count++;
+            continue;
+        }
+
+        $sent_count++;
+    }
+
+    return array(
+        'mode'          => 'targeted',
+        'sent_count'    => $sent_count,
+        'failed_count'  => $failed_count,
+        'matched_users' => count( $users ),
+    );
+}
+
 function egh_amn_register_admin_menu() {
     add_menu_page(
         'Manual Appilix Notifications',
@@ -367,39 +470,24 @@ function egh_amn_handle_send_notification() {
     }
 
     $settings = egh_amn_get_settings();
-    $is_broadcast = egh_amn_is_broadcast_request( $device_target, $level_target, $cefr_target );
-    $users        = $is_broadcast ? array() : egh_amn_get_matching_users( $device_target, $level_target, $cefr_target, $settings );
+    $send_result = egh_send_appilix_notification_to_audience(
+        array(
+            'notification_title' => $title,
+            'notification_body'  => $body,
+            'open_link_url'      => $open_link_url,
+            'notification_image' => $image_url,
+            'device_target'      => $device_target,
+            'language_target'    => $level_target,
+            'cefr_target'        => $cefr_target,
+        )
+    );
 
-    $sent_count   = 0;
-    $failed_count = 0;
-
-    if ( $is_broadcast ) {
-        $result = egh_amn_send_appilix_notification( '', $title, $body, $open_link_url, '' );
-        egh_amn_log_send_result( 'BROADCAST', $title, $body, $result );
-
-        if ( is_wp_error( $result ) ) {
-            $failed_count = 1;
-        } else {
-            $sent_count = 1;
-        }
+    if ( is_wp_error( $send_result ) ) {
+        $sent_count   = 0;
+        $failed_count = 1;
     } else {
-        foreach ( $users as $user ) {
-            $user_image = '';
-
-            if ( ! empty( $image_url ) && 'android' === $user['device'] ) {
-                $user_image = $image_url;
-            }
-
-            $result = egh_amn_send_appilix_notification( $user['email'], $title, $body, $open_link_url, $user_image );
-            egh_amn_log_send_result( $user['email'], $title, $body, $result );
-
-            if ( is_wp_error( $result ) ) {
-                $failed_count++;
-                continue;
-            }
-
-            $sent_count++;
-        }
+        $sent_count   = (int) $send_result['sent_count'];
+        $failed_count = (int) $send_result['failed_count'];
     }
 
     wp_safe_redirect(
