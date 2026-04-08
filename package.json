@@ -1,0 +1,9 @@
+{
+  "name": "egh-appilix-manual-notifications",
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "deploy": "node \"../wp-deploy/deploy.js\" production",
+    "deploy:staging": "node \"../wp-deploy/deploy.js\" staging"
+  }
+}
